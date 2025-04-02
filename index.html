@@ -1,0 +1,455 @@
+ <!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Flappy Bird</title>
+  <style>
+    body { margin: 0; background: #4ec0ca; /* sky blue background */ }
+    canvas { display: block; margin: 0 auto; }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="288" height="512"></canvas>
+<script>
+(() => {
+  // Canvas and context
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  // Disable image smoothing for crisp pixel art
+  ctx.imageSmoothingEnabled = false;
+
+  // Asset URLs
+  const SPRITE_URL = "https://raw.githubusercontent.com/samuelcust/flappy-bird-assets/master/sprites/";
+  const AUDIO_URL  = "https://raw.githubusercontent.com/samuelcust/flappy-bird-assets/master/audio/";
+  // Sprite file names
+  const spriteFiles = {
+    bg: "background-day.png",
+    base: "base.png",
+    pipe: "pipe-green.png",
+    bird0: "yellowbird-upflap.png",
+    bird1: "yellowbird-midflap.png",
+    bird2: "yellowbird-downflap.png",
+    gameOverText: "gameover.png",
+    readyText: "message.png",
+    // Number sprites 0-9
+    num0: "0.png", num1: "1.png", num2: "2.png", num3: "3.png", num4: "4.png",
+    num5: "5.png", num6: "6.png", num7: "7.png", num8: "8.png", num9: "9.png"
+  };
+  // Audio file names
+  const audioFiles = {
+    flap: "wing.wav",
+    score: "point.wav",
+    hit: "hit.wav",
+    die: "die.wav",
+    swoosh: "swoosh.wav"
+  };
+
+  // Objects to hold loaded assets
+  const images = {};
+  const sounds = {};
+
+  let assetsLoaded = 0;
+  const totalAssets = Object.keys(spriteFiles).length + Object.keys(audioFiles).length;
+
+  // Load images
+  for (const key in spriteFiles) {
+    images[key] = new Image();
+    images[key].onload = onAssetLoad;
+    images[key].src = SPRITE_URL + spriteFiles[key];
+  }
+  // Load audio
+  for (const key in audioFiles) {
+    sounds[key] = new Audio(AUDIO_URL + audioFiles[key]);
+    // Set event to count as loaded when ready
+    sounds[key].onloadeddata = onAssetLoad;
+    // Reduce volume slightly if needed (optional)
+    sounds[key].volume = 0.5;
+  }
+
+  // Asset load handler
+  function onAssetLoad() {
+    assetsLoaded++;
+    if (assetsLoaded >= totalAssets) {
+      initGame();
+      requestAnimationFrame(gameLoop);
+    }
+  }
+
+  // Game state constants
+  const STATE_READY = 0;
+  const STATE_PLAYING = 1;
+  const STATE_GAMEOVER = 2;
+  let gameState = STATE_READY;
+
+  // Game variables
+  let score = 0;
+  let bestScore = 0;
+  // Load best score from local storage if available
+  if (localStorage.getItem('flappyBestScore')) {
+    bestScore = parseInt(localStorage.getItem('flappyBestScore'));
+  }
+
+  // Bird properties
+  const bird = {
+    x: 50,               // fixed X position of bird
+    y: 0,                // current Y position
+    width: 0,            // bird sprite width (loaded later)
+    height: 0,           // bird sprite height
+    frameIndex: 0,       // current animation frame (0,1,2)
+    frameCount: 0,       // counter for frame animation timing
+    velocity: 0,         // current vertical velocity
+    rotation: 0          // current rotation angle (radians)
+  };
+
+  // Physics constants for bird
+  const GRAVITY = 0.3;       // gravity acceleration
+  const JUMP_VELOCITY = -6;   // impulse velocity on flap
+  const MAX_DROP_SPEED = 10;  // terminal velocity (max downward speed)
+  // Rotation angles (in radians) corresponding to bird velocity
+  const MAX_ROTATION = 90 * Math.PI/180;   // rotate down (90 deg) when falling fast
+  const MIN_ROTATION = -30 * Math.PI/180;  // rotate up (-30 deg) when rising
+
+  // Pipes
+  const pipes = [];          // array to hold pipe pairs
+  const PIPE_GAP = 100;      // gap height between pipes
+  const PIPE_SPEED = 2;      // horizontal speed of pipes
+  let pipeSpacing = 0;       // counter for pipe spawning timing
+
+  // Base (ground) scrolling
+  let baseX = 0;             // x offset for ground scrolling
+  let baseY = 0;             // y position of ground (calculated after image load)
+  const BASE_SPEED = PIPE_SPEED;  // ground moves at same speed as pipes
+
+  // Ready state animation counter (for bird bobbing)
+  let readyCounter = 0;
+
+  // Initialize game variables after assets are loaded
+  function initGame() {
+    // Set bird dimensions from loaded image (all bird frames same size)
+    bird.width = images.bird0.width;
+    bird.height = images.bird0.height;
+    // Set initial bird position (vertical center of canvas)
+    bird.y = canvas.height / 2 - bird.height/2;
+    // Ground position (base image height)
+    baseY = canvas.height - images.base.height;
+    // Reset game state
+    score = 0;
+    gameState = STATE_READY;
+    pipes.length = 0;
+    baseX = 0;
+    bird.velocity = 0;
+    bird.frameIndex = 0;
+    bird.frameCount = 0;
+    bird.rotation = 0;
+    readyCounter = 0;
+  }
+
+  // Game loop
+  function gameLoop() {
+    update();
+    draw();
+    requestAnimationFrame(gameLoop);
+  }
+
+  // Update game state based on gameState
+  function update() {
+    if (gameState === STATE_PLAYING) {
+      // Bird physics
+      bird.velocity += GRAVITY;
+      if (bird.velocity > MAX_DROP_SPEED) {
+        bird.velocity = MAX_DROP_SPEED;
+      }
+      bird.y += bird.velocity;
+      // Bird rotation based on velocity
+      if (bird.velocity < 0) {
+        // bird is rising
+        bird.rotation = MIN_ROTATION;
+      } else if (bird.velocity >= 0) {
+        // bird is falling, rotate down proportionally to velocity
+        let tilt = (bird.velocity / MAX_DROP_SPEED) * MAX_ROTATION;
+        if (tilt > MAX_ROTATION) tilt = MAX_ROTATION;
+        bird.rotation = tilt;
+      }
+
+      // Pipes movement
+      for (let i = 0; i < pipes.length; i++) {
+        pipes[i].x -= PIPE_SPEED;
+      }
+      // Remove pipes that have gone off screen
+      if (pipes.length && pipes[0].x + images.pipe.width < 0) {
+        pipes.shift();
+      }
+      // Pipe spawning
+      pipeSpacing += PIPE_SPEED;
+      // Spawn a new pipe every 100px of horizontal movement (roughly 1.5 seconds)
+      if (pipeSpacing >= 300) {
+        pipeSpacing = 0;
+        spawnPipe();
+      }
+
+      // Check for collisions with pipes
+      for (let i = 0; i < pipes.length; i++) {
+        const p = pipes[i];
+        // Pipe collision: check if bird is within pipe's x range
+        if (bird.x + bird.width > p.x && bird.x < p.x + images.pipe.width) {
+          // Check if bird is not in the gap vertically
+          if (bird.y < p.gapY || bird.y + bird.height > p.gapY + PIPE_GAP) {
+            // Collision detected
+            gameOver();
+            sounds.hit.play();
+            // No need to check further once collided
+            break;
+          }
+        }
+        // Scoring: if pipe passed the bird and not scored yet
+        if (!p.passed && p.x + images.pipe.width < bird.x) {
+          p.passed = true;
+          score += 1;
+          sounds.score.play();
+          if (score > bestScore) {
+            bestScore = score;
+            localStorage.setItem('flappyBestScore', bestScore);
+          }
+        }
+      }
+
+      // Check for hitting the ground
+      if (bird.y + bird.height >= baseY) {
+        bird.y = baseY - bird.height;  // clamp bird on ground
+        gameOver();
+        sounds.hit.play();
+        sounds.die.play();
+      }
+
+      // Animate bird wings (cycle frames 0-1-2)
+      bird.frameCount++;
+      if (bird.frameCount % 5 === 0) { // switch frame every 5 updates for smooth flapping
+        bird.frameIndex = (bird.frameIndex + 1) % 3;
+      }
+
+      // Ground (base) scrolling
+      baseX -= BASE_SPEED;
+      if (baseX <= -images.base.width) {
+        baseX += images.base.width;
+      }
+    } else if (gameState === STATE_READY) {
+      // In ready state, make the bird bob up and down and flap slowly
+      readyCounter++;
+      bird.y = canvas.height / 2 - bird.height/2 + Math.sin(readyCounter/10) * 5;
+      // Slow wing flapping
+      if (readyCounter % 10 === 0) {
+        bird.frameIndex = (bird.frameIndex + 1) % 3;
+      }
+    } else if (gameState === STATE_GAMEOVER) {
+      // In game over state, bird is falling until it hits ground (if not already)
+      if (bird.y + bird.height < baseY) {
+        bird.velocity += GRAVITY;
+        if (bird.velocity > MAX_DROP_SPEED) bird.velocity = MAX_DROP_SPEED;
+        bird.y += bird.velocity;
+        // Rotate bird until it faces downwards
+        if (bird.rotation < MAX_ROTATION) {
+          bird.rotation += 0.05; // increment rotation to simulate bird nose diving
+          if (bird.rotation > MAX_ROTATION) bird.rotation = MAX_ROTATION;
+        }
+      } else {
+        // Bird has hit the ground
+        bird.y = baseY - bird.height;
+        bird.velocity = 0;
+      }
+      // Ground keeps scrolling in game over (optional, we can stop if desired)
+      baseX -= BASE_SPEED;
+      if (baseX <= -images.base.width) {
+        baseX += images.base.width;
+      }
+    }
+  }
+
+  // Draw everything based on gameState
+  function draw() {
+    // Draw background
+    ctx.drawImage(images.bg, 0, 0);
+    // Draw pipes
+    for (let i = 0; i < pipes.length; i++) {
+      const p = pipes[i];
+      // Top pipe (flipped vertically)
+      ctx.save();
+      ctx.translate(p.x, p.gapY);
+      ctx.scale(1, -1);
+      ctx.drawImage(images.pipe, 0, 0);
+      ctx.restore();
+      // Bottom pipe (normal)
+      ctx.drawImage(images.pipe, p.x, p.gapY + PIPE_GAP);
+    }
+    // Draw ground (base) - two copies for scrolling effect
+    ctx.drawImage(images.base, baseX, baseY);
+    ctx.drawImage(images.base, baseX + images.base.width, baseY);
+
+    if (gameState === STATE_READY) {
+      // Draw bird (no rotation in ready state)
+      ctx.drawImage(images["bird" + bird.frameIndex], bird.x, bird.y);
+      // Draw "Get Ready" prompt
+      const readyX = canvas.width/2 - images.readyText.width/2;
+      const readyY = 100;
+      ctx.drawImage(images.readyText, readyX, readyY);
+    } else if (gameState === STATE_PLAYING) {
+      // Draw bird with rotation
+      ctx.save();
+      ctx.translate(bird.x + bird.width/2, bird.y + bird.height/2);
+      ctx.rotate(bird.rotation);
+      ctx.drawImage(images["bird" + bird.frameIndex], -bird.width/2, -bird.height/2);
+      ctx.restore();
+      // Draw current score (large white numbers) at top center
+      drawScore(score, canvas.width/2, 50, false);
+    } else if (gameState === STATE_GAMEOVER) {
+      // Draw pipes (already drawn), ground (drawn), now bird
+      ctx.save();
+      ctx.translate(bird.x + bird.width/2, bird.y + bird.height/2);
+      ctx.rotate(bird.rotation);
+      // Freeze wing frame (use the current frame index without cycling)
+      ctx.drawImage(images["bird" + bird.frameIndex], -bird.width/2, -bird.height/2);
+      ctx.restore();
+      // Draw "Game Over" text at top center
+      const goX = canvas.width/2 - images.gameOverText.width/2;
+      const goY = 100;
+      ctx.drawImage(images.gameOverText, goX, goY);
+      // Draw scoreboard panel
+      drawScoreboard();
+    }
+  }
+
+  // Draw score on screen; if center=true, (x,y) is center, else treated as top-center for in-game score
+  function drawScore(scoreValue, x, y, small) {
+    const scoreStr = scoreValue.toString();
+    const digitWidth = images.num0.width;
+    const digitHeight = images.num0.height;
+    const totalWidth = scoreStr.length * digitWidth;
+    let drawX = x - totalWidth/2;
+    for (let i = 0; i < scoreStr.length; i++) {
+      const digit = scoreStr.charAt(i);
+      const img = images["num" + digit];
+      if (small) {
+        // Draw smaller version (e.g., 70% size for scoreboard)
+        const w = img.width * 0.7;
+        const h = img.height * 0.7;
+        ctx.drawImage(img, drawX, y, w, h);
+        drawX += w;
+      } else {
+        ctx.drawImage(img, drawX, y);
+        drawX += digitWidth;
+      }
+    }
+  }
+
+  // Draw the game over scoreboard (panel with score, best, medal)
+  function drawScoreboard() {
+    const panelWidth = 230;
+    const panelHeight = 126;
+    const panelX = canvas.width/2 - panelWidth/2;
+    const panelY = 150;
+    // Panel background
+    ctx.fillStyle = "#FDF7AD";
+    ctx.fillRect(panelX, panelY, panelWidth, panelHeight);
+    ctx.strokeStyle = "#DEAE39";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(panelX, panelY, panelWidth, panelHeight);
+    // Score and Best labels (text)
+    ctx.fillStyle = "#000";
+    ctx.font = "bold 16px Arial";
+    ctx.fillText("SCORE", panelX + 150, panelY + 30);
+    ctx.fillText("BEST",  panelX + 150, panelY + 70);
+    // Draw score and best values using number sprites (smaller size)
+    drawScore(score, panelX + 150, panelY + 38, true);
+    drawScore(bestScore, panelX + 150, panelY + 78, true);
+    // Draw medal if earned
+    let medalColor = null;
+    if (score >= 40) medalColor = "platinum";
+    else if (score >= 30) medalColor = "gold";
+    else if (score >= 20) medalColor = "silver";
+    else if (score >= 10) medalColor = "bronze";
+    if (medalColor) {
+      let colorFill;
+      switch(medalColor) {
+        case "bronze": colorFill = "#CD7F32"; break;
+        case "silver": colorFill = "#C0C0C0"; break;
+        case "gold": colorFill = "#FFD700"; break;
+        case "platinum": colorFill = "#E5E4E2"; break;
+      }
+      const medalX = panelX + 30;
+      const medalY = panelY + 60;
+      const medalR = 20;
+      // Medal circle
+      ctx.beginPath();
+      ctx.arc(medalX, medalY, medalR, 0, 2*Math.PI);
+      ctx.fillStyle = colorFill;
+      ctx.fill();
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = "#FFF";
+      ctx.stroke();
+      // Optionally, draw a small bird silhouette or star inside medal (omitted for simplicity)
+    }
+  }
+
+ // Spawn a new pipe pair with random gap position
+  function spawnPipe() {
+    const minGapY = 40; // minimum gap from top
+    const maxGapY = canvas.height - PIPE_GAP - images.base.height; // maximum gap from bottom, adjusted to ensure pipes stay in view
+    const gapY = Math.floor(Math.random() * (maxGapY - minGapY + 1)) + minGapY; // Random gap position within the defined range
+
+    // Create a pipe object
+    const pipeObj = {
+        x: canvas.width,
+        gapY: gapY,
+        passed: false  // flag to mark when score counted
+    };
+    pipes.push(pipeObj);
+}
+
+  // Handle game over transition
+  function gameOver() {
+    if (gameState !== STATE_GAMEOVER) {
+      gameState = STATE_GAMEOVER;
+      // Stop bird flapping animation
+      bird.frameIndex = 1; // freeze to middle frame
+      // Play swoosh sound when showing scoreboard after a short delay
+      setTimeout(() => { sounds.swoosh.play(); }, 500);
+    }
+  }
+
+  // Restart game and go to ready state
+  function resetGame() {
+    initGame();
+    sounds.swoosh.play();
+  }
+
+  // Input handling
+  function handleInput(e) {
+    e.preventDefault();
+    if (gameState === STATE_READY) {
+      // Start the game on first input
+      gameState = STATE_PLAYING;
+      bird.velocity = JUMP_VELOCITY;
+      sounds.flap.play();
+    } else if (gameState === STATE_PLAYING) {
+      // Flap the bird
+      bird.velocity = JUMP_VELOCITY;
+      sounds.flap.play();
+    } else if (gameState === STATE_GAMEOVER) {
+      // If game over, reset the game
+      resetGame();
+    }
+  }
+
+  // Event listeners for input (click, touch, space key)
+  canvas.addEventListener('mousedown', handleInput);
+  canvas.addEventListener('touchstart', handleInput);
+  document.addEventListener('keydown', function(e) {
+    if (e.code === 'Space' || e.code === 'ArrowUp') {
+      handleInput(e);
+    }
+  });
+})();
+</script>
+</body>
+</html>
+ 
+
